@@ -155,4 +155,50 @@ describe('get', () => {
 		expect(values).toEqual([]);
 		await keyvRedis.disconnect();
 	});
+
+	test('should be able to batch individual get', async () => {
+		const keyvRedis = new KeyvRedis(undefined, {
+			autoBatching: true,
+		});
+		
+		await keyvRedis.setMany([{key: 'foo-get-1', value: 'bar'}, {key: 'foo-get-2', value: 'bar2'}, {key: 'foo-get-3', value: 'bar3'}]);
+
+		vi.spyOn(keyvRedis.client, 'get');
+		vi.spyOn(keyvRedis.client, 'mGet');
+
+		const values = await Promise.all([
+			keyvRedis.get('foo-get-1'),
+			keyvRedis.get('foo-get-2'),
+			keyvRedis.get('foo-get-3'),
+		]);
+
+		expect(keyvRedis.client.get).toHaveBeenCalledTimes(0);
+		expect(keyvRedis.client.mGet).toHaveBeenCalledTimes(1);
+		expect(values).toEqual(['bar', 'bar2', 'bar3']);
+		await keyvRedis.disconnect();
+	});
+
+
+	test('should be able to batch individual get respecting a batchSize limit', async () => {
+		const keyvRedis = new KeyvRedis(undefined, {
+			autoBatching: true,
+			getBatchSize: 2,
+		});
+		
+		await keyvRedis.setMany([{key: 'foo-get-1', value: 'bar'}, {key: 'foo-get-2', value: 'bar2'}, {key: 'foo-get-3', value: 'bar3'}]);
+
+		vi.spyOn(keyvRedis.client, 'get');
+		vi.spyOn(keyvRedis.client, 'mGet');
+
+		const values = await Promise.all([
+			keyvRedis.get('foo-get-1'),
+			keyvRedis.get('foo-get-2'),
+			keyvRedis.get('foo-get-3'),
+		]);
+
+		expect(keyvRedis.client.get).toHaveBeenCalledTimes(0);
+		expect(keyvRedis.client.mGet).toHaveBeenCalledTimes(2);
+		expect(values).toEqual(['bar', 'bar2', 'bar3']);
+		await keyvRedis.disconnect();
+	});
 });

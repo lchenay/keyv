@@ -62,6 +62,19 @@ export type KeyvRedisOptions = {
 	 * @default undefined
 	 */
 	connectionTimeout?: number;
+
+	/**
+	 * Whether to enable automatic batching of get requests.
+	 * @default false
+	 */
+	autoBatching?: boolean;
+
+	/**
+	 * The maximum number of keys to batch in a single mget request.
+	 * This is only used if autoBatching is enabled.
+	 * @default 100
+	 */
+	getBatchSize?: number;
 };
 
 export type KeyvRedisPropertyOptions = KeyvRedisOptions & {
@@ -129,6 +142,14 @@ export default class KeyvRedis<T> extends Hookified implements KeyvStoreAdapter 
 	private _throwOnConnectError = true;
 	private _throwOnErrors = false;
 	private _connectionTimeout: number | undefined;
+	private _autoBatching = false;
+	private _getBatchSize = 100;
+
+	private _batchBuffer: {
+		keys: string[];
+		promises: Array<{resolve: (value: T | Promise<T>) => void; reject: (reason?: any) => void;}>;
+		sent: boolean;
+	} | undefined;
 
 	/**
 	 * KeyvRedis constructor.
@@ -498,11 +519,58 @@ export default class KeyvRedis<T> extends Hookified implements KeyvStoreAdapter 
 	}
 
 	/**
+	 * Get a value from the store using batching if multiple call within same tick.
+	 * 
+	 * @param {string} key - the key to get
+	 * @returns {Promise<U | undefined>} - the value or undefined if the key does not exist
+	 */
+	private async batchGet<U = T>(key: string): Promise<U | undefined> {
+		if (this._batchBuffer == null || this._batchBuffer.keys.length >= this._getBatchSize || this._batchBuffer.sent == true) {
+			this._batchBuffer = {
+				keys: [],
+				promises: [],
+				sent: false,
+			}
+
+			const currentBatchBuffer = this._batchBuffer;
+
+			setTimeout(() => {
+				currentBatchBuffer.sent = true;
+				const keys = currentBatchBuffer.keys;
+
+				this.getMany<U>(keys).then(values => {
+					for (let i = 0; i < values.length; i++) {
+						currentBatchBuffer.promises[i].resolve(values[i] as T);
+					}
+				}).catch(error => {
+					for (const promise of currentBatchBuffer.promises) {
+						promise.reject(error);
+					}
+				});
+			}, 0);
+		}
+
+		this._batchBuffer.keys.push(key);
+
+		const promise = new Promise<U | undefined>((resolve, reject) => {
+			this._batchBuffer?.promises.push({resolve: resolve as (value: T | Promise<T>) => void, reject});
+		});
+
+		return promise;
+	}
+
+	/**
 	 * Get a value from the store. If the key does not exist, it will return undefined.
 	 * @param {string} key - the key to get
 	 * @returns {Promise<string | undefined>} - the value or undefined if the key does not exist
 	 */
 	public async get<U = T>(key: string): Promise<U | undefined> {
+		// if autoBatching is enabled, we will not use this method directly
+
+		if (this._autoBatching) {
+			return this.batchGet(key) as Promise<U | undefined>;
+		}
+
 		const client = await this.getClient();
 
 		try {
@@ -884,6 +952,14 @@ export default class KeyvRedis<T> extends Hookified implements KeyvStoreAdapter 
 		if (options.connectionTimeout !== undefined) {
 			this._connectionTimeout = options.connectionTimeout;
 		}
+		
+		if (options.autoBatching !== undefined) {
+			this._autoBatching = options.autoBatching;
+		}
+
+		if (options.getBatchSize !== undefined && options.getBatchSize > 0) {
+			this._getBatchSize = options.getBatchSize;
+		} 
 	}
 
 	private initClient(): void {
